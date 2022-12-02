@@ -32,17 +32,24 @@ import sqlite3
 
 
 def CreateTable():
-    ''' Create status table, with 1 row of of 'status' '''
-    with sqlite3.connect('status.db') as conn:
+    ''' Create status table, with 1 row of id 0 and 'status' '''
+    with sqlite3.connect('home.db') as conn:
         c = conn.cursor()
-        c.execute('''CREATE TABLE IF NOT EXISTS status (status text)''')
-        c.execute('''INSERT INTO status VALUES ('AWAY')''')
+        c.execute('''CREATE TABLE status (id INTEGER PRIMARY KEY, status TEXT)''')
+        c.execute('''INSERT INTO status (status) VALUES ('AWAY')''')
+        conn.commit()
+
+    ''' Create door table, with 1 row of id 0 and 'status' '''
+    with sqlite3.connect('home.db') as conn:
+        c = conn.cursor()
+        c.execute('''CREATE TABLE door (id INTEGER PRIMARY KEY, status TEXT)''')
+        c.execute('''INSERT INTO door (status) VALUES ('CLOSE')''')
         conn.commit()
 
 
 def UpdateStatus(status):
     ''' Update status table '''
-    with sqlite3.connect('status.db') as conn:
+    with sqlite3.connect('home.db') as conn:
         c = conn.cursor()
         c.execute('''UPDATE status SET status = ?''', (status,))
         conn.commit()
@@ -50,7 +57,7 @@ def UpdateStatus(status):
 
 def GetStatus():
     ''' Get status from status table '''
-    with sqlite3.connect('status.db') as conn:
+    with sqlite3.connect('home.db') as conn:
         c = conn.cursor()
         c.execute('''SELECT status FROM status''')
         status = c.fetchone()[0]
@@ -115,7 +122,7 @@ parser = WebhookParser(channel_secret)
 
 @app.route("/callback", methods=['POST'])
 def callback():
-    with sqlite3.connect('status.db') as conn:
+    with sqlite3.connect('home.db') as conn:
         c = conn.cursor()
         signature = request.headers['X-Line-Signature']
 
