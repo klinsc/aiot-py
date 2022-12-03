@@ -1,5 +1,6 @@
 # Import all the necessary files!
 import os
+import time
 import tensorflow as tf
 from tensorflow.keras import layers  # type: ignore
 from tensorflow.keras import Model  # type: ignore
@@ -14,7 +15,7 @@ import base64
 from datetime import datetime
 
 from linebot import (
-    LineBotApi, WebhookParser
+    LineBotApi, WebhookParser, WebhookHandler
 )
 from linebot.exceptions import (
     InvalidSignatureError
@@ -30,38 +31,85 @@ from dotenv import load_dotenv
 
 import sqlite3
 
+from flask_mqtt import Mqtt, MQTT_LOG_ERR, MQTT_LOG_DEBUG
+
 
 def CreateTable():
-    ''' Create status table, with 1 row of id 0 and 'status' '''
+    ''' Create beacon table, with 1 row of id 0 and 'status' '''
     with sqlite3.connect('home.db') as conn:
         c = conn.cursor()
-        c.execute('''CREATE TABLE status (id INTEGER PRIMARY KEY, status TEXT)''')
-        c.execute('''INSERT INTO status (status) VALUES ('AWAY')''')
+        c.execute(
+            '''CREATE TABLE IF NOT EXISTS beacon (id INTEGER PRIMARY KEY, status TEXT)''')
+
+        # check if there is already a row of id 1
+        c.execute('''SELECT * FROM beacon WHERE id = 1''')
+        if c.fetchone() is None:
+            # if there is no row of id 1, insert a new row
+            c.execute('''INSERT INTO beacon (id, status) VALUES (1, 'AWAY')''')
+        else:
+            # if there is a row of id 1, update the status
+            c.execute('''UPDATE beacon SET status = 'AWAY' WHERE id = 1''')
+
         conn.commit()
 
     ''' Create door table, with 1 row of id 0 and 'status' '''
     with sqlite3.connect('home.db') as conn:
         c = conn.cursor()
-        c.execute('''CREATE TABLE door (id INTEGER PRIMARY KEY, status TEXT)''')
-        c.execute('''INSERT INTO door (status) VALUES ('CLOSE')''')
+        c.execute(
+            '''CREATE TABLE IF NOT EXISTS door (id INTEGER PRIMARY KEY, status TEXT)''')
+
+        # check if there is already a row of id 1
+        c.execute('''SELECT * FROM door WHERE id = 1''')
+        if c.fetchone() is None:
+            # if there is no row of id 1, insert a new row
+            c.execute('''INSERT INTO door (id, tatus) VALUES (1, 'CLOSE')''')
+        else:
+            # if there is a row of id 1, update the status
+            c.execute('''UPDATE door SET status = 'CLOSE' WHERE id = 1''')
+
+        conn.commit()
+
+    ''' Create timestamp table, with 1 row of id 0 and 'date' '''
+    with sqlite3.connect('home.db') as conn:
+        c = conn.cursor()
+        c.execute(
+            '''CREATE TABLE IF NOT EXISTS timestamp (id INTEGER PRIMARY KEY, date TEXT )''')
+
+        # check if there is already a row of id 1
+        c.execute('''SELECT * FROM timestamp WHERE id = 1''')
+        if c.fetchone() is None:
+            # if there is no row of id 1, insert a new row
+            c.execute('''INSERT INTO timestamp (id, date) VALUES (1, 0)''')
+        else:
+            # if there is a row of id 1, update the status
+            c.execute('''UPDATE timestamp SET date = 0 WHERE id = 1''')
+
         conn.commit()
 
 
-def UpdateStatus(status):
+def UpdateStatus(table, status):
     ''' Update status table '''
     with sqlite3.connect('home.db') as conn:
         c = conn.cursor()
-        c.execute('''UPDATE status SET status = ?''', (status,))
-        conn.commit()
+        c.execute(f'''UPDATE '{table}' SET status = '{status}' WHERE id = 1''')
 
 
-def GetStatus():
+def UpdateTimestamp():
+    ''' Update timestamp table '''
+    with sqlite3.connect('home.db') as conn:
+        c = conn.cursor()
+        c.execute(
+            f'''UPDATE timestamp SET date = '{datetime.now()}' WHERE id = 1''')
+
+
+def GetStatus(table):
     ''' Get status from status table '''
     with sqlite3.connect('home.db') as conn:
         c = conn.cursor()
-        c.execute('''SELECT status FROM status''')
-        status = c.fetchone()[0]
-        return status
+        c.execute(f'''SELECT status FROM '{table}' WHERE id = 1''')
+        status = c.fetchone()
+        conn.commit()
+    return status[0]
 
 
 # !Face Recognition 🌝
@@ -120,6 +168,21 @@ line_bot_api = LineBotApi(channel_access_token)
 parser = WebhookParser(channel_secret)
 
 
+MQTT_BROKER = 'broker.hivemq.com'
+app.config['MQTT_BROKER_URL'] = MQTT_BROKER  # use the free broker from NETPIE
+app.config['MQTT_BROKER_PORT'] = 1883  # default port for non-tls connection
+# set the time interval for sending a ping to the broker to 5 seconds
+app.config['MQTT_KEEPALIVE'] = 60
+# set TLS to disabled for testing purposes
+app.config['MQTT_TLS_ENABLED'] = False
+mqtt = Mqtt(app)
+mqtt.client._client_id = mqtt.client_id.encode('utf-8')
+
+handler = WebhookHandler(channel_secret)
+
+mqtt_msg = ''
+
+
 @app.route("/callback", methods=['POST'])
 def callback():
     with sqlite3.connect('home.db') as conn:
@@ -151,20 +214,11 @@ def callback():
                 # If the user is entering the beacon range, update the status to 'HOME'
                 if event.beacon.type == 'enter':
                     print('enter')
-                    UpdateStatus('HOME')
+                    UpdateStatus('beacon', 'HOME')
+                    UpdateTimestamp()
                     line_bot_api.reply_message(
                         event.reply_token,
                         TextSendMessage(text='Welcome home!'))
-
-                    # Add an interval to check if the user is still at home, every 10 seconds
-
-                # # If the user is leaving the beacon range, update the status to 'AWAY'
-                # elif event.beacon.type == 'leave':
-                #     print('leave')
-                #     UpdateStatus('AWAY')
-                #     line_bot_api.reply_message(
-                #         event.reply_token,
-                #         TextSendMessage(text='Bye bye!'))
 
         return 'OK'
 
@@ -209,7 +263,7 @@ def who_is_it(image_path, database, model):
 
 @app.route('/verify', methods=['POST'])
 def change():
-    if GetStatus() == 'HOME':
+    if GetStatus('beacon') == 'HOME':
         img_data = request.get_json()['image64']
         img_name = str(int(datetime.timestamp(datetime.now())))
         with open('images/'+img_name+'.jpg', "wb") as fh:
@@ -230,8 +284,64 @@ def change():
 
 @app.route('/status', methods=['GET'])
 def status():
-    status = GetStatus()
-    return json.dumps({"status": status})
+    table = request.args.get('table', default='', type=str)
+    if table == 'beacon':
+        return json.dumps({"status": GetStatus('beacon')})
+    if table == 'door':
+        return json.dumps({"status": GetStatus('door')})
+    return json.dumps({"status": 500})
+
+
+@handler.add(MessageEvent, message=TextMessage)
+def handle_text_message(event):
+    text = event.message.text
+    # get user id
+    user_id = event.source.user_id
+    profile = line_bot_api.get_profile(user_id)
+    name = profile.display_name
+
+    if text.startswith('#'):
+        if text == '#on':
+            mqtt.publish('/ict792/message', '#on')
+            # db = firestore.client()
+            # db.collection(u'messages').add(
+            #     {u'timstamp': firestore.SERVER_TIMESTAMP, u'message': name + u'turn on the LED'})
+
+        elif text == '#off':
+            mqtt.publish('/ict792/message', '#off')
+            # db = firestore.client()
+            # db.collection(u'messages').add(
+            #     {u'timstamp': firestore.SERVER_TIMESTAMP, u'message': name + u'turn off the LED'})
+
+        if text == '1':
+            mqtt.publish('/ict792/message', '1')
+        elif text == '2':
+            mqtt.publish('/ict792/message', '2')
+
+
+@mqtt.on_connect()
+def handle_mqtt_connect(client, userdata, flags, rc):
+    if rc == 0:
+        print('Connected successfully')
+        mqtt.subscribe('/ict792/message')
+    else:
+        print('Bad connection. Code:', rc)
+
+
+@mqtt.on_message()
+def handle_mqtt_message(client, userdata, message):
+    data = dict(
+        topic=message.topic,
+        payload=message.payload.decode()
+    )
+    print(
+        'Received message on topic: {topic} with payload: {payload}'.format(**data))
+
+    # # If press the board's button, send a message to LINE and save the message to firestore
+    # if (data["payload"] == 'this is 💣Boom pressing!'):
+    #     db = firestore.client()
+    #     db.collection(u'messages').add(
+    #         {u'timstamp': firestore.SERVER_TIMESTAMP, u'message': data["payload"]})
 
 
 CreateTable()
