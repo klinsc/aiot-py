@@ -33,6 +33,8 @@ import sqlite3
 
 from flask_mqtt import Mqtt, MQTT_LOG_ERR, MQTT_LOG_DEBUG
 
+from crontab import CronTab
+
 
 def CreateTable():
     ''' Create beacon table, with 1 row of id 0 and 'status' '''
@@ -82,7 +84,8 @@ def CreateTable():
             c.execute('''INSERT INTO timestamp (id, date) VALUES (1, 0)''')
         else:
             # if there is a row of id 1, update the status
-            c.execute('''UPDATE timestamp SET date = 0 WHERE id = 1''')
+            c.execute(
+                '''UPDATE timestamp SET date = ? WHERE id = 1''', (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
 
         conn.commit()
 
@@ -99,7 +102,7 @@ def UpdateTimestamp():
     with sqlite3.connect('home.db') as conn:
         c = conn.cursor()
         c.execute(
-            f'''UPDATE timestamp SET date = '{datetime.now()}' WHERE id = 1''')
+            '''UPDATE timestamp SET date = ? WHERE id = 1''', (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
 
 
 def GetStatus(table):
@@ -139,6 +142,14 @@ def img_to_encoding(path, model):
 
 
 database = {}
+# read images in folder images and create database
+dir = 'images'
+for filename in os.listdir(dir):
+    if filename.endswith(".jpg"):
+        identity = os.path.splitext(filename)[0]
+        database[identity] = img_to_encoding(dir + "/" + filename, model)
+    else:
+        continue
 # database["test1"] = img_to_encoding("images/test1.jpg", model)
 # database["test2"] = img_to_encoding("images/test2.jpg", model)
 # database["test3"] = img_to_encoding("images/test3.jpg", model)
@@ -277,9 +288,17 @@ def change():
         os.remove(path)
         if min_dist > 5:
             return json.dumps({"identity": 0})
-        return json.dumps({"identity": str(identity)})
+
+        mqtt.publish(os.environ['MQTT_DOOR'], '#open')
+        with sqlite3.connect('home.db') as conn:
+            c = conn.cursor()
+            c.execute('UPDATE door SET status = ? WHERE id = ?',
+                      ('OPEN', '1'))
+            conn.commit()
+
+        return json.dumps({"identity": str(identity), "status": 200})
     else:
-        return json.dumps({"identity": str(0)})
+        return json.dumps({"identity": 0, "status": 403})
 
 
 @app.route('/status', methods=['GET'])
@@ -344,7 +363,10 @@ def handle_mqtt_message(client, userdata, message):
     #         {u'timstamp': firestore.SERVER_TIMESTAMP, u'message': data["payload"]})
 
 
+# reset table
 CreateTable()
+
+# start the server
 ngrok.set_auth_token(os.environ['NGROK_AUTH_TOKEN'])
 http_tunnel = ngrok.connect(5000)
 endpoint_url = http_tunnel.public_url.replace('http://', 'https://')
